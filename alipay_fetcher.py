@@ -1,19 +1,19 @@
 # coding=utf-8
-import os
-import logging
-import requests
 import json
+import logging
+import os
+from random import uniform as random_time
+from time import sleep
+
+import requests
+from PIL import Image
 from lxml import html
 from selenium import webdriver
-from time import sleep
-from random import uniform as random_time
-from PIL import Image
-from dama2_api import DamatuApi
+from selenium.common.exceptions import NoSuchElementException
 
 
 class AlipayFetcher:
-    def __init__(self, alipay_account=None, alipay_password=None, captcha_resolver='dama2', dama2_account=None,
-                 dama2_password=None, check_interval=30):
+    def __init__(self, alipay_account=None, alipay_password=None, check_interval=60):
 
         self.global_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:42.0) Gecko/20100101 Firefox/42.0',
@@ -22,8 +22,8 @@ class AlipayFetcher:
             'Content-Type': 'application/x-www-form-urlencoded',
         }
         self.cur_dir = os.path.dirname(os.path.abspath(__file__))
-        self.screen_shot = os.path.join(self.cur_dir, 'screen_shot.jpg')
-        self.captcha_image = os.path.join(self.cur_dir, 'captcha.jpg')
+        self.screen_shot = os.path.join(self.cur_dir, 'screen_shot.png')
+        self.captcha_image = os.path.join(self.cur_dir, 'captcha.png')
         self.login_url = 'https://auth.alipay.com/login/index.htm'
         self.transfer_check_url = 'https://lab.alipay.com/consume/record/items.htm'
         self.check_interval = check_interval
@@ -31,85 +31,74 @@ class AlipayFetcher:
         self.alipay_account = alipay_account
         self.alipay_password = alipay_password
         self.alipay_cookies = None
-        self.captcha_resolver = captcha_resolver
         self.transfer_tables = None
-
-        if self.captcha_resolver == 'dama2':
-            self.dama2_account = dama2_account
-            self.dama2_password = dama2_password
-        else:
-            self.dama2_account = None
-            self.dama2_password = None
         logging.basicConfig(level=logging.INFO)
 
     def fake_phantom_header(self):
         for key, value in enumerate(self.global_headers):
-            webdriver.DesiredCapabilities.PHANTOMJS['phantomjs.page.customHeaders.{}'.format(key)] = value
+            webdriver.DesiredCapabilities.FIREFOX['firefox.page.customHeaders.{}'.format(key)] = value
 
     def resolve_captcha(self):
-        if self.captcha_resolver == 'dama2':
-            # FIXME,add a max retries limit if anything wrong happened
-            dmt = DamatuApi(self.dama2_account, self.dama2_password)
-            if int(dmt.getBalance()) <= 0:
-                logging.error('Balance for dama2 not enough!')
-                return None
-            else:
-                code = dmt.decode(self.captcha_image, 42)
-                logging.info('Code From Dama2:{}'.format(code))
-                return code.strip()
-        else:
-            raise NotImplementedError
+        # modify this function to handle captcha resolve,
+        # or just manual input the code since we don't need to do this too much times
+        logging.info('please check captcha.png for the check code.')
+        code = input('Type in the check code:')
+        return code.strip()
 
-    def login_with_phantom(self):
-        self.fake_phantom_header()
-        driver = webdriver.PhantomJS()
+    def login_with_firefox(self):
+        options = webdriver.FirefoxOptions()
+        options.add_argument('-headless')
+        driver = webdriver.Firefox(firefox_options=options)
         driver.get(self.login_url)
+        driver.find_element_by_xpath('//ul[@id="J-loginMethod-tabs"]/li[2]').click()
+        sleep(random_time(0.3, 0.8))
 
         username_form = driver.find_element_by_id('J-input-user')
-        password_form = driver.find_element_by_id('password_input')
+        password_form = driver.find_element_by_id('password_rsainput')
 
         username_form.clear()
-        username_form.send_keys(self.alipay_account)
+        for letter in self.alipay_account:
+            username_form.send_keys(letter)
+            sleep(random_time(0.1, 0.6))
         sleep(random_time(0.3, 0.8))
-        password_form.send_keys(self.alipay_password)
-        sleep(random_time(0.1, 0.6))
+        for letter in self.alipay_password:
+            password_form.send_keys(letter)
+            sleep(random_time(0.1, 0.6))
+        sleep(random_time(0.2, 0.8))
 
         captcha_input = driver.find_element_by_id('J-input-checkcode')
         captcha_image = driver.find_element_by_id('J-checkcode-img')
+
         captcha_location = captcha_image.location
         captcha_size = captcha_image.size
 
-        img_left = captcha_location['x']
-        img_top = captcha_location['y']
-        img_right = captcha_location['x'] + captcha_size['width']
-        img_bottom = captcha_location['y'] + captcha_size['height']
+        if captcha_location['x'] != 0:
+            img_left = captcha_location['x']
+            img_top = captcha_location['y']
+            img_right = captcha_location['x'] + captcha_size['width']
+            img_bottom = captcha_location['y'] + captcha_size['height']
 
-        driver.save_screenshot(self.screen_shot)
-        img_item = Image.open(self.screen_shot)
-        img_item = img_item.crop((img_left, img_top, img_right, img_bottom))
-        img_item.save(self.captcha_image)
+            driver.save_screenshot(self.screen_shot)
+            img_item = Image.open(self.screen_shot)
+            img_item = img_item.crop((img_left, img_top, img_right, img_bottom))
+            img_item.save(self.captcha_image)
 
-        captcha = self.resolve_captcha()
-        if captcha:
-            captcha_input.send_keys(captcha)
-
-            captcha_response = driver.find_element_by_xpath("//span[@id='J-checkcodeIcon']//i[@class='iconfont']")
-            captcha_response = captcha_response.get_attribute('title')
-            if '出错' in captcha_response:
-                captcha_input.clear()
-            # FIXME,add backup method for captcha resolve here
-            elif '成功' in captcha_response:
-                pass
-
-            sleep(random_time(0.2, 0.6))
-            login_btn = driver.find_element_by_id('J-login-btn')
-            login_btn.click()
-            sleep(random_time(0.7, 1.3))
-            self.alipay_cookies = driver.get_cookies()
-            logging.info('New Session Created!')
-            driver.quit()
+            captcha = self.resolve_captcha()
+            if captcha:
+                for letter in captcha:
+                    captcha_input.send_keys(letter)
+                    sleep(random_time(0.1, 0.6))
+                driver.save_screenshot('fill_check_code.png')
         else:
-            self.alipay_cookies = None
+            print('No Check Code Needed!')
+        sleep(random_time(0.2, 0.6))
+        login_btn = driver.find_element_by_id('J-login-btn')
+        login_btn.click()
+
+        sleep(random_time(0.7, 1.3))
+        self.alipay_cookies = driver.get_cookies()
+        logging.info('New Session Created!')
+        driver.quit()
 
     @staticmethod
     def apply_cookies_to_session(cookies=None, session=None):
@@ -120,6 +109,7 @@ class AlipayFetcher:
     def check_alipay_transfer(self):
         if not self.alipay_cookies:
             logging.debug('Previous login failed!')
+            # previous login failed,main function will try to re-login again
             return None
         request_session = requests.session()
         self.apply_cookies_to_session(cookies=self.alipay_cookies, session=request_session)
@@ -127,8 +117,8 @@ class AlipayFetcher:
             response = request_session.get(url=self.transfer_check_url, headers=self.global_headers)
             if str(response.url).startswith(self.login_url):
                 logging.warning('Session expired with lifetime:{}'.format(self.session_life))
+                # previous login expired,main function will try to re-login again
                 return None
-
             tree = html.fromstring(response.text)
             transfer_list = tree.xpath("//tr[@class='record-list']")
             if not len(transfer_list):
@@ -162,17 +152,21 @@ class AlipayFetcher:
                     self.transfer_tables[t_id]['from'] = t_from
 
             self.data_process()
+            # visit below page to keep cookies alive
+            request_session.get(url='https://my.alipay.com/portal/i.htm', headers=self.global_headers)
             sleep(self.check_interval)
             self.session_life += self.check_interval
 
     def data_process(self):
+        # modify this function to handle income transaction data for your own application
         if self.transfer_tables:
-            logging.info(json.dumps(self.transfer_tables))
+            for item in self.transfer_tables:
+                logging.info(self.transfer_tables[item])
 
     def run(self):
         while True:
             try:
-                self.login_with_phantom()
+                self.login_with_firefox()
                 self.check_alipay_transfer()
             except KeyboardInterrupt:
                 logging.info('Exit by user...')
